@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"reflect"
 	"testing"
+	"time"
 
+	"github.com/gogo/protobuf/proto"
 	pb "github.com/prysmaticlabs/prysm/proto/beacon/p2p/v1"
 	"github.com/prysmaticlabs/prysm/shared/hashutil"
 	"github.com/prysmaticlabs/prysm/shared/params"
@@ -29,12 +31,13 @@ func TestGenesisBlock(t *testing.T) {
 	if !bytes.Equal(b1.StateRootHash32, stateHash) {
 		t.Error("genesis block StateRootHash32 isn't initialized correctly")
 	}
-
-	rd := []byte{}
-	if IsRandaoValid(b1.RandaoRevealHash32, rd) {
-		t.Error("RANDAO should be empty")
+	expectedEth1 := &pb.Eth1Data{
+		DepositRootHash32: params.BeaconConfig().ZeroHash[:],
+		BlockHash32:       params.BeaconConfig().ZeroHash[:],
 	}
-
+	if !proto.Equal(b1.Eth1Data, expectedEth1) {
+		t.Error("genesis block Eth1Data isn't initialized correctly")
+	}
 }
 
 func TestBlockRootAtSlot_OK(t *testing.T) {
@@ -173,8 +176,7 @@ func TestDecodeDepositAmountAndTimeStamp(t *testing.T) {
 		{
 			depositData: &pb.DepositInput{
 				Pubkey:                      []byte("testing"),
-				RandaoCommitmentHash32:      []byte("randao"),
-				CustodyCommitmentHash32:     []byte("commitment"),
+				ProofOfPossession:           []byte("pop"),
 				WithdrawalCredentialsHash32: []byte("withdraw"),
 			},
 			amount:    8749343850,
@@ -183,7 +185,7 @@ func TestDecodeDepositAmountAndTimeStamp(t *testing.T) {
 		{
 			depositData: &pb.DepositInput{
 				Pubkey:                      []byte("testing"),
-				CustodyCommitmentHash32:     []byte("commitment"),
+				ProofOfPossession:           []byte("pop"),
 				WithdrawalCredentialsHash32: []byte("withdraw"),
 			},
 			amount:    657660,
@@ -192,24 +194,24 @@ func TestDecodeDepositAmountAndTimeStamp(t *testing.T) {
 		{
 			depositData: &pb.DepositInput{
 				Pubkey:                      []byte("testing"),
-				RandaoCommitmentHash32:      []byte("randao"),
+				ProofOfPossession:           []byte("pop"),
 				WithdrawalCredentialsHash32: []byte("withdraw"),
 			},
 			amount:    5445540,
 			timestamp: 34340,
 		}, {
 			depositData: &pb.DepositInput{
-				RandaoCommitmentHash32:      []byte("randao"),
-				CustodyCommitmentHash32:     []byte("commitment"),
+				Pubkey:                      []byte("testing"),
+				ProofOfPossession:           []byte("pop"),
 				WithdrawalCredentialsHash32: []byte("withdraw"),
 			},
 			amount:    4545,
 			timestamp: 4343,
 		}, {
 			depositData: &pb.DepositInput{
-				Pubkey:                  []byte("testing"),
-				RandaoCommitmentHash32:  []byte("randao"),
-				CustodyCommitmentHash32: []byte("commitment"),
+				Pubkey:                      []byte("testing"),
+				ProofOfPossession:           []byte("pop"),
+				WithdrawalCredentialsHash32: []byte("withdraw"),
 			},
 			amount:    76706966,
 			timestamp: 34394393,
@@ -263,5 +265,38 @@ func TestBlockChildren(t *testing.T) {
 	}
 	if len(children) != 2 {
 		t.Errorf("Expected %d children, received %d", 2, len(children))
+	}
+}
+
+func TestEncodeDecodeDepositInput_Ok(t *testing.T) {
+	input := &pb.DepositInput{
+		Pubkey:                      []byte("key"),
+		WithdrawalCredentialsHash32: []byte("withdraw"),
+		ProofOfPossession:           []byte("pop"),
+	}
+	depositTime := time.Now().Unix()
+	enc, err := EncodeDepositData(input, params.BeaconConfig().MaxDepositAmount, depositTime)
+	if err != nil {
+		t.Errorf("Could not encode deposit input: %v", err)
+	}
+	dec, err := DecodeDepositInput(enc)
+	if err != nil {
+		t.Errorf("Could not decode deposit input: %v", err)
+	}
+	if !proto.Equal(input, dec) {
+		t.Errorf("Original and decoded messages do not match, wanted %v, received %v", input, dec)
+	}
+	value, timestamp, err := DecodeDepositAmountAndTimeStamp(enc)
+	if err != nil {
+		t.Errorf("Could not decode amount and timestamp: %v", err)
+	}
+	if value != params.BeaconConfig().MaxDepositAmount || timestamp != depositTime {
+		t.Errorf(
+			"Expected value to match, received %d == %d, expected timestamp to match received %d == %d",
+			value,
+			params.BeaconConfig().MaxDepositAmount,
+			timestamp,
+			depositTime,
+		)
 	}
 }

@@ -3,33 +3,36 @@ package keystore
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/binary"
 	"io/ioutil"
 	"os"
 	"testing"
 
+	"github.com/prysmaticlabs/prysm/shared/bytesutil"
+
 	"github.com/pborman/uuid"
-	bls "github.com/prysmaticlabs/go-bls"
+	"github.com/prysmaticlabs/prysm/shared/bls"
+	"github.com/prysmaticlabs/prysm/shared/testutil"
 )
 
 func TestMarshalAndUnmarshal(t *testing.T) {
 	testID := uuid.NewRandom()
-	blsKey := &bls.SecretKey{}
-	blsKey.SetValue(10)
+	blsKey, err := bls.RandKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	key := &Key{
 		ID:        testID,
-		PublicKey: blsKey.GetPublicKey(),
 		SecretKey: blsKey,
+		PublicKey: blsKey.PublicKey(),
 	}
 	marshalledObject, err := key.MarshalJSON()
 	if err != nil {
 		t.Fatalf("unable to marshall key %v", err)
 	}
-
 	newKey := &Key{
 		ID:        []byte{},
-		SecretKey: &bls.SecretKey{},
-		PublicKey: &bls.PublicKey{},
+		SecretKey: blsKey,
+		PublicKey: blsKey.PublicKey(),
 	}
 
 	err = newKey.UnmarshalJSON(marshalledObject)
@@ -43,7 +46,7 @@ func TestMarshalAndUnmarshal(t *testing.T) {
 }
 
 func TestStoreRandomKey(t *testing.T) {
-	tmpdir := os.TempDir()
+	tmpdir := testutil.TempDir()
 	filedir := tmpdir + "/keystore"
 	ks := &Store{
 		keysDirPath: filedir,
@@ -60,23 +63,31 @@ func TestStoreRandomKey(t *testing.T) {
 	if err := os.RemoveAll(filedir); err != nil {
 		t.Errorf("unable to remove temporary files %v", err)
 	}
-
 }
+
 func TestNewKeyFromBLS(t *testing.T) {
-	blskey := &bls.SecretKey{}
-
-	expectedNum := int64(20)
-	blskey.SetValue(expectedNum)
-
-	key := newKeyFromBLS(blskey)
-
-	keyBuffer := make([]byte, len(key.SecretKey.LittleEndian()))
-	binary.LittleEndian.PutUint64(keyBuffer, uint64(expectedNum))
-
-	if !bytes.Equal(key.SecretKey.LittleEndian(), keyBuffer) {
-		t.Fatalf("secret key is not of the expected value %v , %v", key.SecretKey.LittleEndian(), keyBuffer)
+	b := []byte("hi")
+	b32 := bytesutil.ToBytes32(b)
+	blskey, err := bls.SecretKeyFromBytes(b32[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := newKeyFromBLS(blskey)
+	if err != nil {
+		t.Fatalf("could not get new key from bls %v", err)
 	}
 
+	expected := blskey.Marshal()
+	if !bytes.Equal(expected, key.SecretKey.Marshal()) {
+		t.Fatalf("secret key is not of the expected value %d", key.SecretKey.Marshal())
+	}
+
+	reader := rand.Reader
+
+	_, err = NewKey(reader)
+	if err != nil {
+		t.Fatalf("random key unable to be generated: %v", err)
+	}
 }
 
 func TestWriteFile(t *testing.T) {

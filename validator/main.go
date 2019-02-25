@@ -6,11 +6,10 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/prysmaticlabs/prysm/validator/accounts"
-
 	"github.com/prysmaticlabs/prysm/shared/cmd"
 	"github.com/prysmaticlabs/prysm/shared/debug"
 	"github.com/prysmaticlabs/prysm/shared/version"
+	"github.com/prysmaticlabs/prysm/validator/accounts"
 	"github.com/prysmaticlabs/prysm/validator/node"
 	"github.com/prysmaticlabs/prysm/validator/types"
 	"github.com/sirupsen/logrus"
@@ -105,6 +104,7 @@ contract in order to activate the validator client`,
 	}
 
 	app.Flags = []cli.Flag{
+		types.DemoConfigFlag,
 		types.BeaconRPCProviderFlag,
 		types.KeystorePathFlag,
 		types.PasswordFlag,
@@ -113,8 +113,6 @@ contract in order to activate the validator client`,
 		cmd.EnableTracingFlag,
 		cmd.TracingEndpointFlag,
 		cmd.TraceSampleFractionFlag,
-		cmd.KeystorePasswordFlag,
-		cmd.KeystoreDirectoryFlag,
 		cmd.BootstrapNode,
 		cmd.MonitoringPortFlag,
 		debug.PProfFlag,

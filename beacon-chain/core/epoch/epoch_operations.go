@@ -47,18 +47,20 @@ func CurrentBoundaryAttestations(
 	state *pb.BeaconState,
 	currentEpochAttestations []*pb.PendingAttestation,
 ) ([]*pb.PendingAttestation, error) {
-	var boundarySlot uint64
 	var boundaryAttestations []*pb.PendingAttestation
 
 	for _, attestation := range currentEpochAttestations {
-		boundaryBlockRoot, err := block.BlockRoot(state, boundarySlot)
+		boundaryBlockRoot, err := block.BlockRoot(state, helpers.StartSlot(helpers.CurrentEpoch(state)))
 		if err != nil {
 			return nil, err
 		}
 
 		attestationData := attestation.Data
 		sameRoot := bytes.Equal(attestationData.JustifiedBlockRootHash32, boundaryBlockRoot)
+		log.Infof("Boundary attestation: att justified root: %v, state justified root: %d", attestationData.JustifiedBlockRootHash32, boundaryBlockRoot)
+		log.Infof("Boundary attestation: att justified epoch: %v, state justified epoch: %d", attestation.Data.JustifiedEpoch, state.JustifiedEpoch)
 		sameEpoch := attestation.Data.JustifiedEpoch == state.JustifiedEpoch
+
 		if sameRoot && sameEpoch {
 			boundaryAttestations = append(boundaryAttestations, attestation)
 		}
@@ -67,7 +69,7 @@ func CurrentBoundaryAttestations(
 }
 
 // PrevAttestations returns the attestations of the previous epoch
-// (state.slot - 2 * EPOCH_LENGTH...state.slot - EPOCH_LENGTH).
+// (state.slot - 2 * SLOTS_PER_EPOCH...state.slot - EPOCH_LENGTH).
 //
 // Spec pseudocode definition:
 //   return [a for a in state.latest_attestations if
@@ -173,7 +175,7 @@ func TotalBalance(
 
 	var totalBalance uint64
 	for _, index := range activeValidatorIndices {
-		totalBalance += validators.EffectiveBalance(state, index)
+		totalBalance += helpers.EffectiveBalance(state, index)
 	}
 
 	return totalBalance
@@ -283,7 +285,7 @@ func TotalAttestingBalance(
 	}
 
 	for _, index := range attestedValidatorIndices {
-		totalBalance += validators.EffectiveBalance(state, index)
+		totalBalance += helpers.EffectiveBalance(state, index)
 	}
 
 	return totalBalance, nil
@@ -336,7 +338,7 @@ func winningRoot(
 
 		var rootBalance uint64
 		for _, index := range indices {
-			rootBalance += validators.EffectiveBalance(state, index)
+			rootBalance += helpers.EffectiveBalance(state, index)
 		}
 
 		if rootBalance > winnerBalance ||

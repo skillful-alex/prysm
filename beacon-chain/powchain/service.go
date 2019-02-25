@@ -11,18 +11,20 @@ import (
 	"strings"
 	"time"
 
-	ethereum "github.com/ethereum/go-ethereum"
+	"github.com/prysmaticlabs/prysm/beacon-chain/core/helpers"
+
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	gethTypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
-	"github.com/prysmaticlabs/prysm/beacon-chain/core/blocks"
 	"github.com/prysmaticlabs/prysm/beacon-chain/db"
 	contracts "github.com/prysmaticlabs/prysm/contracts/deposit-contract"
 	pb "github.com/prysmaticlabs/prysm/proto/beacon/p2p/v1"
 	"github.com/prysmaticlabs/prysm/shared/event"
 	"github.com/prysmaticlabs/prysm/shared/hashutil"
+	"github.com/prysmaticlabs/prysm/shared/params"
 	"github.com/prysmaticlabs/prysm/shared/trieutil"
 	"github.com/sirupsen/logrus"
 )
@@ -52,6 +54,8 @@ type Reader interface {
 // POWBlockFetcher defines a struct that can retrieve mainchain blocks.
 type POWBlockFetcher interface {
 	BlockByHash(ctx context.Context, hash common.Hash) (*gethTypes.Block, error)
+	BlockByNumber(ctx context.Context, number *big.Int) (*gethTypes.Block, error)
+	HeaderByNumber(ctx context.Context, number *big.Int) (*gethTypes.Header, error)
 }
 
 // Client defines a struct that combines all relevant ETH1.0 mainchain interactions required
@@ -74,13 +78,13 @@ type Web3Service struct {
 	cancel                  context.CancelFunc
 	client                  Client
 	headerChan              chan *gethTypes.Header
-	logChan                 chan gethTypes.Log
 	endpoint                string
 	depositContractAddress  common.Address
 	chainStartFeed          *event.Feed
 	reader                  Reader
 	logger                  bind.ContractFilterer
-	blockNumber             *big.Int    // the latest ETH1.0 chain blockNumber.
+	blockFetcher            POWBlockFetcher
+	blockHeight             *big.Int    // the latest ETH1.0 chain blockHeight.
 	blockHash               common.Hash // the latest ETH1.0 chain blockHash.
 	depositContractCaller   *contracts.DepositContractCaller
 	depositRoot             []byte
@@ -89,6 +93,8 @@ type Web3Service struct {
 	chainStarted            bool
 	beaconDB                *db.BeaconDB
 	lastReceivedMerkleIndex int64 // Keeps track of the last received index to prevent log spam.
+	chainStartDelay         uint64
+	lastRequestedBlock      *big.Int
 }
 
 // Web3ServiceConfig defines a config struct for web3 service to use through its life cycle.
@@ -98,8 +104,10 @@ type Web3ServiceConfig struct {
 	Client          Client
 	Reader          Reader
 	Logger          bind.ContractFilterer
+	BlockFetcher    POWBlockFetcher
 	ContractBackend bind.ContractBackend
 	BeaconDB        *db.BeaconDB
+	ChainStartDelay uint64
 }
 
 var (
@@ -127,19 +135,21 @@ func NewWeb3Service(ctx context.Context, config *Web3ServiceConfig) (*Web3Servic
 		ctx:                     ctx,
 		cancel:                  cancel,
 		headerChan:              make(chan *gethTypes.Header),
-		logChan:                 make(chan gethTypes.Log),
 		endpoint:                config.Endpoint,
-		blockNumber:             nil,
+		blockHeight:             nil,
 		blockHash:               common.BytesToHash([]byte{}),
 		depositContractAddress:  config.DepositContract,
 		chainStartFeed:          new(event.Feed),
 		client:                  config.Client,
 		reader:                  config.Reader,
 		logger:                  config.Logger,
+		blockFetcher:            config.BlockFetcher,
 		depositContractCaller:   depositContractCaller,
 		chainStartDeposits:      []*pb.Deposit{},
 		beaconDB:                config.BeaconDB,
 		lastReceivedMerkleIndex: -1,
+		chainStartDelay:         config.ChainStartDelay,
+		lastRequestedBlock:      big.NewInt(0),
 	}, nil
 }
 
@@ -149,6 +159,10 @@ func (w *Web3Service) Start() {
 		"endpoint": w.endpoint,
 	}).Info("Starting service")
 	go w.run(w.ctx.Done())
+
+	if w.chainStartDelay > 0 {
+		go w.runDelayTimer(w.ctx.Done())
+	}
 }
 
 // Stop the web3 service's main event loop and associated goroutines.
@@ -177,14 +191,40 @@ func (w *Web3Service) Status() error {
 	return nil
 }
 
-// LatestBlockNumber in the ETH1.0 chain.
-func (w *Web3Service) LatestBlockNumber() *big.Int {
-	return w.blockNumber
+// DepositRoot returns the Merkle root of the latest deposit trie
+// from the ETH1.0 deposit contract.
+func (w *Web3Service) DepositRoot() [32]byte {
+	return w.depositTrie.Root()
+}
+
+// LatestBlockHeight in the ETH1.0 chain.
+func (w *Web3Service) LatestBlockHeight() *big.Int {
+	return w.blockHeight
 }
 
 // LatestBlockHash in the ETH1.0 chain.
 func (w *Web3Service) LatestBlockHash() common.Hash {
 	return w.blockHash
+}
+
+// BlockExists returns true if the block exists, it's height and any possible error encountered.
+func (w *Web3Service) BlockExists(hash common.Hash) (bool, *big.Int, error) {
+	block, err := w.blockFetcher.BlockByHash(w.ctx, hash)
+	if err != nil {
+		return false, big.NewInt(0), fmt.Errorf("could not query block with given hash: %v", err)
+	}
+
+	return true, block.Number(), nil
+}
+
+// BlockHashByHeight returns the block hash of the block at the given height.
+func (w *Web3Service) BlockHashByHeight(height *big.Int) (common.Hash, error) {
+	block, err := w.blockFetcher.BlockByNumber(w.ctx, height)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("could not query block with given height: %v", err)
+	}
+
+	return block.Hash(), nil
 }
 
 // Client for interacting with the ETH1.0 chain.
@@ -212,24 +252,24 @@ func (w *Web3Service) HasChainStartLogOccurred() (bool, uint64, error) {
 
 // ProcessLog is the main method which handles the processing of all
 // logs from the deposit contract on the ETH1.0 chain.
-func (w *Web3Service) ProcessLog(VRClog gethTypes.Log) {
+func (w *Web3Service) ProcessLog(depositLog gethTypes.Log) {
 	// Process logs according to their event signature.
-	if VRClog.Topics[0] == hashutil.Hash(depositEventSignature) {
-		w.ProcessDepositLog(VRClog)
+	if depositLog.Topics[0] == hashutil.Hash(depositEventSignature) {
+		w.ProcessDepositLog(depositLog)
 		return
 	}
-	if VRClog.Topics[0] == hashutil.Hash(chainStartEventSignature) && !w.chainStarted {
-		w.ProcessChainStartLog(VRClog)
+	if depositLog.Topics[0] == hashutil.Hash(chainStartEventSignature) && !w.chainStarted {
+		w.ProcessChainStartLog(depositLog)
 		return
 	}
-	log.Debugf("Log is not of a valid event signature %#x", VRClog.Topics[0])
+	log.Debugf("Log is not of a valid event signature %#x", depositLog.Topics[0])
 }
 
 // ProcessDepositLog processes the log which had been received from
 // the ETH1.0 chain by trying to ascertain which participant deposited
 // in the contract.
-func (w *Web3Service) ProcessDepositLog(VRClog gethTypes.Log) {
-	merkleRoot, depositData, merkleTreeIndex, _, err := contracts.UnpackDepositLogData(VRClog.Data)
+func (w *Web3Service) ProcessDepositLog(depositLog gethTypes.Log) {
+	merkleRoot, depositData, merkleTreeIndex, _, err := contracts.UnpackDepositLogData(depositLog.Data)
 	if err != nil {
 		log.Errorf("Could not unpack log %v", err)
 		return
@@ -247,7 +287,7 @@ func (w *Web3Service) ProcessDepositLog(VRClog gethTypes.Log) {
 		return
 	}
 	w.lastReceivedMerkleIndex = int64(index)
-	depositInput, err := blocks.DecodeDepositInput(depositData)
+	depositInput, err := helpers.DecodeDepositInput(depositData)
 	if err != nil {
 		log.Errorf("Could not decode deposit input  %v", err)
 		return
@@ -259,7 +299,7 @@ func (w *Web3Service) ProcessDepositLog(VRClog gethTypes.Log) {
 	if !w.chainStarted {
 		w.chainStartDeposits = append(w.chainStartDeposits, deposit)
 	} else {
-		w.beaconDB.InsertPendingDeposit(w.ctx, deposit, big.NewInt(int64(VRClog.BlockNumber)))
+		w.beaconDB.InsertPendingDeposit(w.ctx, deposit, big.NewInt(int64(depositLog.BlockNumber)))
 	}
 	log.WithFields(logrus.Fields{
 		"publicKey":       fmt.Sprintf("%#x", depositInput.Pubkey),
@@ -270,9 +310,9 @@ func (w *Web3Service) ProcessDepositLog(VRClog gethTypes.Log) {
 
 // ProcessChainStartLog processes the log which had been received from
 // the ETH1.0 chain by trying to determine when to start the beacon chain.
-func (w *Web3Service) ProcessChainStartLog(VRClog gethTypes.Log) {
+func (w *Web3Service) ProcessChainStartLog(depositLog gethTypes.Log) {
 	chainStartCount.Inc()
-	receiptRoot, timestampData, err := contracts.UnpackChainStartLogData(VRClog.Data)
+	receiptRoot, timestampData, err := contracts.UnpackChainStartLogData(depositLog.Data)
 	if err != nil {
 		log.Errorf("Unable to unpack ChainStart log data %v", err)
 		return
@@ -291,8 +331,30 @@ func (w *Web3Service) ProcessChainStartLog(VRClog gethTypes.Log) {
 	chainStartTime := time.Unix(int64(timestamp), 0)
 	log.WithFields(logrus.Fields{
 		"ChainStartTime": chainStartTime,
-	}).Info("Minimum Number of Validators Reached for beacon-chain to start")
+	}).Info("Minimum number of validators reached for beacon-chain to start")
 	w.chainStartFeed.Send(chainStartTime)
+}
+
+func (w *Web3Service) runDelayTimer(done <-chan struct{}) {
+	timer := time.NewTimer(time.Duration(w.chainStartDelay) * time.Second)
+
+	for {
+		select {
+		case <-done:
+			log.Debug("ETH1.0 chain service context closed, exiting goroutine")
+			timer.Stop()
+			return
+		case currentTime := <-timer.C:
+
+			w.chainStarted = true
+			log.WithFields(logrus.Fields{
+				"ChainStartTime": currentTime.Unix(),
+			}).Info("Minimum number of validators reached for beacon-chain to start")
+			w.chainStartFeed.Send(currentTime)
+			timer.Stop()
+			return
+		}
+	}
 }
 
 // run subscribes to all the services for the ETH1.0 chain.
@@ -313,22 +375,27 @@ func (w *Web3Service) run(done <-chan struct{}) {
 		log.Errorf("Unable to subscribe to incoming ETH1.0 chain headers: %v", err)
 		return
 	}
-	query := ethereum.FilterQuery{
-		Addresses: []common.Address{
-			w.depositContractAddress,
-		},
-	}
-	logSub, err := w.logger.SubscribeFilterLogs(w.ctx, query, w.logChan)
+
+	header, err := w.blockFetcher.HeaderByNumber(w.ctx, nil)
 	if err != nil {
-		log.Errorf("Unable to query logs from VRC: %v", err)
+		log.Errorf("Unable to retrieve latest ETH1.0 chain header: %v", err)
 		return
 	}
-	if err := w.processPastLogs(query); err != nil {
-		log.Errorf("Unable to process past logs %v", err)
-		return
+
+	w.blockHeight = header.Number
+	w.blockHash = header.Hash()
+
+	// Only process logs if the chain start delay flag is not enabled.
+	if w.chainStartDelay == 0 {
+		if err := w.processPastLogs(); err != nil {
+			log.Errorf("Unable to process past logs %v", err)
+			return
+		}
 	}
-	defer logSub.Unsubscribe()
+
+	ticker := time.NewTicker(1 * time.Second)
 	defer headSub.Unsubscribe()
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -338,20 +405,21 @@ func (w *Web3Service) run(done <-chan struct{}) {
 		case <-headSub.Err():
 			log.Debug("Unsubscribed to head events, exiting goroutine")
 			return
-		case <-logSub.Err():
-			log.Debug("Unsubscribed to log events, exiting goroutine")
-			return
 		case header := <-w.headerChan:
 			blockNumberGauge.Set(float64(header.Number.Int64()))
-			w.blockNumber = header.Number
+			w.blockHeight = header.Number
 			w.blockHash = header.Hash()
 			log.WithFields(logrus.Fields{
-				"blockNumber": w.blockNumber,
+				"blockNumber": w.blockHeight,
 				"blockHash":   w.blockHash.Hex(),
 			}).Debug("Latest web3 chain event")
-		case VRClog := <-w.logChan:
-			log.Info("Received deposit contract log")
-			w.ProcessLog(VRClog)
+		case <-ticker.C:
+			if w.lastRequestedBlock.Cmp(w.blockHeight) == 0 {
+				continue
+			}
+			if err := w.requestBatchedLogs(); err != nil {
+				log.Error(err)
+			}
 
 		}
 	}
@@ -380,7 +448,13 @@ func (w *Web3Service) saveInTrie(depositData []byte, merkleRoot common.Hash) err
 
 // processPastLogs processes all the past logs from the deposit contract and
 // updates the deposit trie with the data from each individual log.
-func (w *Web3Service) processPastLogs(query ethereum.FilterQuery) error {
+func (w *Web3Service) processPastLogs() error {
+	query := ethereum.FilterQuery{
+		Addresses: []common.Address{
+			w.depositContractAddress,
+		},
+	}
+
 	logs, err := w.logger.FilterLogs(w.ctx, query)
 	if err != nil {
 		return err
@@ -389,5 +463,37 @@ func (w *Web3Service) processPastLogs(query ethereum.FilterQuery) error {
 	for _, log := range logs {
 		w.ProcessLog(log)
 	}
+	w.lastRequestedBlock.Set(w.blockHeight)
+	return nil
+}
+
+// requestBatchedLogs requests and processes all the logs from the period
+// last polled to now.
+func (w *Web3Service) requestBatchedLogs() error {
+
+	// We request for the nth block behind the current head, in order to have
+	// stabilised logs when we retrieve it from the 1.0 chain.
+	requestedBlock := big.NewInt(0).Sub(w.blockHeight, big.NewInt(params.BeaconConfig().LogBlockDelay))
+	query := ethereum.FilterQuery{
+		Addresses: []common.Address{
+			w.depositContractAddress,
+		},
+		FromBlock: w.lastRequestedBlock.Add(w.lastRequestedBlock, big.NewInt(1)),
+		ToBlock:   requestedBlock,
+	}
+	logs, err := w.logger.FilterLogs(w.ctx, query)
+	if err != nil {
+		return err
+	}
+
+	// Only process log slices which are larger than zero.
+	if len(logs) > 0 {
+		log.Debug("Processing Batched Logs")
+		for _, log := range logs {
+			w.ProcessLog(log)
+		}
+	}
+
+	w.lastRequestedBlock.Set(requestedBlock)
 	return nil
 }

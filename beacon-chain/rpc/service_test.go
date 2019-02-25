@@ -7,6 +7,9 @@ import (
 	"io/ioutil"
 	"testing"
 
+	"github.com/prysmaticlabs/prysm/shared/params"
+
+	pb "github.com/prysmaticlabs/prysm/proto/beacon/p2p/v1"
 	"github.com/prysmaticlabs/prysm/shared/event"
 	"github.com/prysmaticlabs/prysm/shared/testutil"
 	"github.com/sirupsen/logrus"
@@ -37,10 +40,34 @@ func (ms *mockOperationService) IncomingExitFeed() *event.Feed {
 	return new(event.Feed)
 }
 
+func (ms *mockOperationService) PendingAttestations() ([]*pb.Attestation, error) {
+	return []*pb.Attestation{
+		{
+			AggregationBitfield: []byte("A"),
+			Data: &pb.AttestationData{
+				Slot: params.BeaconConfig().GenesisSlot,
+			},
+		},
+		{
+			AggregationBitfield: []byte("B"),
+			Data: &pb.AttestationData{
+				Slot: params.BeaconConfig().GenesisSlot,
+			},
+		},
+		{
+			AggregationBitfield: []byte("C"),
+			Data: &pb.AttestationData{
+				Slot: params.BeaconConfig().GenesisSlot,
+			},
+		},
+	}, nil
+}
+
 type mockChainService struct {
-	blockFeed       *event.Feed
-	stateFeed       *event.Feed
-	attestationFeed *event.Feed
+	blockFeed            *event.Feed
+	stateFeed            *event.Feed
+	attestationFeed      *event.Feed
+	stateInitializedFeed *event.Feed
 }
 
 func (m *mockChainService) IncomingBlockFeed() *event.Feed {
@@ -55,15 +82,20 @@ func (m *mockChainService) CanonicalStateFeed() *event.Feed {
 	return m.stateFeed
 }
 
+func (m *mockChainService) StateInitializedFeed() *event.Feed {
+	return m.stateInitializedFeed
+}
+
 func newMockChainService() *mockChainService {
 	return &mockChainService{
-		blockFeed:       new(event.Feed),
-		stateFeed:       new(event.Feed),
-		attestationFeed: new(event.Feed),
+		blockFeed:            new(event.Feed),
+		stateFeed:            new(event.Feed),
+		attestationFeed:      new(event.Feed),
+		stateInitializedFeed: new(event.Feed),
 	}
 }
 
-func TestLifecycle(t *testing.T) {
+func TestLifecycle_OK(t *testing.T) {
 	hook := logTest.NewGlobal()
 	rpcService := NewRPCService(context.Background(), &Config{
 		Port:     "7348",
@@ -81,7 +113,7 @@ func TestLifecycle(t *testing.T) {
 
 }
 
-func TestBadEndpoint(t *testing.T) {
+func TestRPC_BadEndpoint(t *testing.T) {
 	fl := logrus.WithField("prefix", "rpc")
 
 	log = &TestLogger{
@@ -109,7 +141,7 @@ func TestBadEndpoint(t *testing.T) {
 
 }
 
-func TestStatus(t *testing.T) {
+func TestStatus_CredentialError(t *testing.T) {
 	credentialErr := errors.New("credentialError")
 	s := &Service{credentialError: credentialErr}
 
@@ -118,7 +150,7 @@ func TestStatus(t *testing.T) {
 	}
 }
 
-func TestInsecureEndpoint(t *testing.T) {
+func TestRPC_InsecureEndpoint(t *testing.T) {
 	hook := logTest.NewGlobal()
 	rpcService := NewRPCService(context.Background(), &Config{
 		Port: "7777",

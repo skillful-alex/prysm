@@ -3,14 +3,15 @@ package client
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
-
-	"github.com/prysmaticlabs/prysm/shared/params"
+	"time"
 
 	"github.com/gogo/protobuf/proto"
 	"github.com/golang/mock/gomock"
 	pbp2p "github.com/prysmaticlabs/prysm/proto/beacon/p2p/v1"
 	pb "github.com/prysmaticlabs/prysm/proto/beacon/rpc/v1"
+	"github.com/prysmaticlabs/prysm/shared/params"
 	"github.com/prysmaticlabs/prysm/shared/testutil"
 	logTest "github.com/sirupsen/logrus/hooks/test"
 )
@@ -43,7 +44,7 @@ func TestAttestToBlockHead_ValidatorCommitteeAtSlotFailure(t *testing.T) {
 		gomock.Any(),
 	).Return(nil, errors.New("something went wrong"))
 
-	validator.AttestToBlockHead(context.Background(), 30)
+	validator.AttestToBlockHead(context.Background(), 30+params.BeaconConfig().GenesisSlot)
 	testutil.AssertLogsContain(t, hook, "Could not fetch crosslink committees at slot 30")
 }
 
@@ -172,4 +173,110 @@ func TestAttestToBlockHead_AttestsCorrectly(t *testing.T) {
 		t.Errorf("Incorrectly attested head, wanted %v, received %v", expectedAttestation, generatedAttestation)
 	}
 	testutil.AssertLogsContain(t, hook, "Submitted attestation successfully")
+}
+
+func TestAttestToBlockHead_DoesNotAttestBeforeDelay(t *testing.T) {
+	validator, m, finish := setup(t)
+	defer finish()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	defer wg.Wait()
+
+	validator.genesisTime = uint64(time.Now().Unix())
+	validatorIndex := uint64(5)
+	committee := []uint64{0, 3, 4, 2, validatorIndex, 6, 8, 9, 10}
+	m.validatorClient.EXPECT().ValidatorCommitteeAtSlot(
+		gomock.Any(), // ctx
+		gomock.AssignableToTypeOf(&pb.CommitteeRequest{}),
+		gomock.Any(), // ctx
+	).Return(&pb.CommitteeResponse{
+		Shard:     5,
+		Committee: committee,
+	}, nil).Do(func(arg0, arg1 interface{}) {
+		wg.Done()
+	})
+
+	m.attesterClient.EXPECT().AttestationInfoAtSlot(
+		gomock.Any(), // ctx
+		gomock.AssignableToTypeOf(&pb.AttestationInfoRequest{}),
+	).Return(&pb.AttestationInfoResponse{
+		BeaconBlockRootHash32:    []byte("A"),
+		EpochBoundaryRootHash32:  []byte("B"),
+		JustifiedBlockRootHash32: []byte("C"),
+		LatestCrosslink:          &pbp2p.Crosslink{ShardBlockRootHash32: []byte{'D'}},
+		JustifiedEpoch:           3,
+	}, nil).Do(func(arg0, arg1 interface{}) {
+		wg.Done()
+	})
+
+	m.validatorClient.EXPECT().ValidatorIndex(
+		gomock.Any(), // ctx
+		gomock.AssignableToTypeOf(&pb.ValidatorIndexRequest{}),
+	).Return(&pb.ValidatorIndexResponse{
+		Index: uint64(validatorIndex),
+	}, nil).Do(func(arg0, arg1 interface{}) {
+		wg.Done()
+	})
+
+	m.attesterClient.EXPECT().AttestHead(
+		gomock.Any(), // ctx
+		gomock.AssignableToTypeOf(&pbp2p.Attestation{}),
+	).Return(&pb.AttestResponse{}, nil /* error */).Times(0)
+
+	delay = 2
+	go validator.AttestToBlockHead(context.Background(), 0)
+}
+
+func TestAttestToBlockHead_DoesAttestAfterDelay(t *testing.T) {
+	validator, m, finish := setup(t)
+	defer finish()
+
+	var wg sync.WaitGroup
+	wg.Add(3)
+	defer wg.Wait()
+
+	validator.genesisTime = uint64(time.Now().Unix())
+	validatorIndex := uint64(5)
+	committee := []uint64{0, 3, 4, 2, validatorIndex, 6, 8, 9, 10}
+	m.validatorClient.EXPECT().ValidatorCommitteeAtSlot(
+		gomock.Any(), // ctx
+		gomock.AssignableToTypeOf(&pb.CommitteeRequest{}),
+		gomock.Any(), // ctx
+	).Return(&pb.CommitteeResponse{
+		Shard:     5,
+		Committee: committee,
+	}, nil).Do(func(arg0, arg1 interface{}) {
+		wg.Done()
+	})
+
+	m.attesterClient.EXPECT().AttestationInfoAtSlot(
+		gomock.Any(), // ctx
+		gomock.AssignableToTypeOf(&pb.AttestationInfoRequest{}),
+	).Return(&pb.AttestationInfoResponse{
+		BeaconBlockRootHash32:    []byte("A"),
+		EpochBoundaryRootHash32:  []byte("B"),
+		JustifiedBlockRootHash32: []byte("C"),
+		LatestCrosslink:          &pbp2p.Crosslink{ShardBlockRootHash32: []byte{'D'}},
+		JustifiedEpoch:           3,
+	}, nil).Do(func(arg0, arg1 interface{}) {
+		wg.Done()
+	})
+
+	m.validatorClient.EXPECT().ValidatorIndex(
+		gomock.Any(), // ctx
+		gomock.AssignableToTypeOf(&pb.ValidatorIndexRequest{}),
+	).Return(&pb.ValidatorIndexResponse{
+		Index: uint64(validatorIndex),
+	}, nil).Do(func(arg0, arg1 interface{}) {
+		wg.Done()
+	})
+
+	m.attesterClient.EXPECT().AttestHead(
+		gomock.Any(), // ctx
+		gomock.Any(),
+	).Return(&pb.AttestResponse{}, nil).Times(1)
+
+	delay = 0
+	validator.AttestToBlockHead(context.Background(), 0)
 }

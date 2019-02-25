@@ -43,8 +43,12 @@ func (vs *ValidatorServer) ValidatorEpochAssignments(
 	ctx context.Context,
 	req *pb.ValidatorEpochAssignmentsRequest,
 ) (*pb.ValidatorEpochAssignmentsResponse, error) {
-	if len(req.PublicKey) != 48 {
-		return nil, fmt.Errorf("expected 48 byte public key, received %d", len(req.PublicKey))
+	if len(req.PublicKey) != params.BeaconConfig().BLSPubkeyLength {
+		return nil, fmt.Errorf(
+			"expected public key to have length %d, received %d",
+			params.BeaconConfig().BLSPubkeyLength,
+			len(req.PublicKey),
+		)
 	}
 	beaconState, err := vs.beaconDB.State()
 	if err != nil {
@@ -58,12 +62,20 @@ func (vs *ValidatorServer) ValidatorEpochAssignments(
 	var attesterSlot uint64
 	var proposerSlot uint64
 
-	for slot := req.EpochStart; slot < req.EpochStart+params.BeaconConfig().EpochLength; slot++ {
-		crossLinkCommittees, err := helpers.CrosslinkCommitteesAtSlot(beaconState, slot, false)
-		if err != nil {
-			return nil, err
+	for slot := req.EpochStart; slot < req.EpochStart+params.BeaconConfig().SlotsPerEpoch; slot++ {
+		var crossLinkCommittees []*helpers.CrosslinkCommittee
+		if beaconState.ValidatorRegistryUpdateEpoch == helpers.SlotToEpoch(req.EpochStart) {
+			crossLinkCommittees, err = helpers.CrosslinkCommitteesAtSlot(beaconState, slot, true)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			crossLinkCommittees, err = helpers.CrosslinkCommitteesAtSlot(beaconState, slot, false)
+			if err != nil {
+				return nil, err
+			}
 		}
-		proposerIndex, err := v.BeaconProposerIdx(beaconState, slot)
+		proposerIndex, err := helpers.BeaconProposerIndex(beaconState, slot)
 		if err != nil {
 			return nil, err
 		}
@@ -97,7 +109,7 @@ func (vs *ValidatorServer) ValidatorCommitteeAtSlot(ctx context.Context, req *pb
 	}
 	crossLinkCommittees, err := helpers.CrosslinkCommitteesAtSlot(beaconState, req.Slot, false /* registry change */)
 	if err != nil {
-		return nil, fmt.Errorf("could not get crosslink committees at slot %d: %v", req.Slot, err)
+		return nil, fmt.Errorf("could not get crosslink committees at slot %d: %v", req.Slot-params.BeaconConfig().GenesisSlot, err)
 	}
 	var committee []uint64
 	var shard uint64
@@ -120,5 +132,38 @@ func (vs *ValidatorServer) ValidatorCommitteeAtSlot(ctx context.Context, req *pb
 	return &pb.CommitteeResponse{
 		Committee: committee,
 		Shard:     shard,
+	}, nil
+}
+
+// NextEpochCommitteeAssignment returns the committee assignment response from a given validator public key.
+// The committee assignment response contains the following fields for the next epoch:
+//	1.) The list of validators in the committee.
+//	2.) The shard to which the committee is assigned.
+//	3.) The slot at which the committee is assigned.
+//	4.) The bool signalling if the validator is expected to propose a block at the assigned slot.
+func (vs *ValidatorServer) NextEpochCommitteeAssignment(
+	ctx context.Context,
+	req *pb.ValidatorIndexRequest) (*pb.CommitteeAssignmentResponse, error) {
+
+	state, err := vs.beaconDB.State()
+	if err != nil {
+		return nil, fmt.Errorf("could not fetch beacon state: %v", err)
+	}
+	idx, err := v.ValidatorIdx(req.PublicKey, state.ValidatorRegistry)
+	if err != nil {
+		return nil, fmt.Errorf("could not get active validator index: %v", err)
+	}
+
+	committee, shard, slot, isProposer, err :=
+		helpers.NextEpochCommitteeAssignment(state, idx, false)
+	if err != nil {
+		return nil, fmt.Errorf("could not get next epoch committee assignment: %v", err)
+	}
+
+	return &pb.CommitteeAssignmentResponse{
+		Committee:  committee,
+		Shard:      shard,
+		Slot:       slot,
+		IsProposer: isProposer,
 	}, nil
 }

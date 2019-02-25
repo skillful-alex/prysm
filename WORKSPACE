@@ -35,8 +35,8 @@ http_archive(
 
 http_archive(
     name = "build_bazel_rules_nodejs",
-    urls = ["https://github.com/bazelbuild/rules_nodejs/releases/download/0.18.5/rules_nodejs-0.18.5.tar.gz"],
-    sha256 = "c8cd6a77433f7d3bb1f4ac87f15822aa102989f8e9eb1907ca0cad718573985b",
+    urls = ["https://github.com/bazelbuild/rules_nodejs/releases/download/0.18.7/rules_nodejs-0.18.7.tar.gz"],
+    sha256 = "a69c5bd317beef982298ea7b5ed8b5c5275d1b55ee199e98a0ca088f8e0c6cce",
 )
 
 http_archive(
@@ -108,6 +108,19 @@ load(
 _go_image_repos()
 
 http_archive(
+    name = "prysm_testnet_site",
+    url = "https://github.com/prestonvanloon/prysm-testnet-site/archive/ee6c0659223775395cd5e592a6c0e5c6d4abe7e1.tar.gz",
+    strip_prefix = "prysm-testnet-site-ee6c0659223775395cd5e592a6c0e5c6d4abe7e1",
+    sha256 = "c02fcf85202d184c6fa4e78fa16295729affbfd60e4827728ec189d7e3895d90",
+    build_file_content = """
+proto_library(
+  name = "faucet_proto",
+  srcs = ["src/proto/faucet.proto"],
+  visibility = ["//visibility:public"],
+)""",
+)
+
+http_archive(
     name = "io_kubernetes_build",
     sha256 = "b4e7819861f2ec89b7309bd0c44fb3348c3a4a8ee494ec7668edb3960ff11814",
     strip_prefix = "repo-infra-4ce715fbe67d8fbed05ec2bb47a148e754100a4b",
@@ -124,7 +137,7 @@ go_repository(
 
 go_repository(
     name = "com_github_ethereum_go_ethereum",
-    commit = "ec3d1d97a481e6cba542751a6defae7c76e322f1",
+    commit = "2ed4a57e9522dc2a023577f0b92ff623c3412303",
     importpath = "github.com/ethereum/go-ethereum",
     # Note: go-ethereum is not bazel-friendly with regards to cgo. We have a
     # a fork that has resolved these issues by disabling HID/USB support and
@@ -186,7 +199,7 @@ go_repository(
 
 go_repository(
     name = "com_github_multiformats_go_multiaddr",
-    commit = "312b9db3552cf2045efb3ab5d10104c3ec8ff79d",
+    tag = "v0.0.1",
     importpath = "github.com/multiformats/go-multiaddr",
 )
 
@@ -199,7 +212,7 @@ go_repository(
 go_repository(
     name = "com_github_multiformats_go_multihash",
     importpath = "github.com/multiformats/go-multihash",
-    tag = "v1.0.8",
+    tag = "v1.0.10",
 )
 
 go_repository(
@@ -282,13 +295,13 @@ go_repository(
 
 go_repository(
     name = "com_github_gxed_hashland",
-    commit = "d9f6b97f8db22dd1e090fd0bbbe98f09cc7dd0a8",
+    tag = "v0.0.1",
     importpath = "github.com/gxed/hashland",
 )
 
 go_repository(
     name = "com_github_mattn_go_colorable",
-    tag = "v0.1.0",
+    tag = "v0.1.1",
     importpath = "github.com/mattn/go-colorable",
 )
 
@@ -386,7 +399,7 @@ go_repository(
 go_repository(
     name = "com_github_mattn_go_isatty",
     importpath = "github.com/mattn/go-isatty",
-    tag = "v0.0.4",
+    tag = "v0.0.5",
 )
 
 go_repository(
@@ -499,7 +512,7 @@ go_repository(
 
 go_repository(
     name = "org_golang_x_sys",
-    commit = "3b5209105503162ded1863c307ac66fec31120dd",
+    commit = "cc5685c2db1239775905f3911f0067c0fa74762f",
     importpath = "golang.org/x/sys",
 )
 
@@ -541,7 +554,7 @@ go_repository(
 
 go_repository(
     name = "org_golang_x_crypto",
-    commit = "74369b46fc6756741c016591724fd1cb8e26845f",
+    commit = "ffb98f73852f696ea2bb21a617a5c4b3e067a439",
     importpath = "golang.org/x/crypto",
 )
 
@@ -595,7 +608,7 @@ go_repository(
 
 go_repository(
     name = "com_github_syndtr_goleveldb",
-    commit = "2f17a3356c6616cbfc4ae4c38147dc062a68fb0e",
+    tag = "v1.0.0",
     importpath = "github.com/syndtr/goleveldb",
 )
 
@@ -643,7 +656,7 @@ go_repository(
 
 go_repository(
     name = "com_github_aristanetworks_goarista",
-    commit = "83ee463e1d9e2bb15f0793a53c37a385d73763a1",
+    commit = "728bce664cf5dfb921941b240828f989a2c8f8e3",
     importpath = "github.com/aristanetworks/goarista",
 )
 
@@ -667,7 +680,7 @@ go_repository(
 
 go_repository(
     name = "com_github_prometheus_procfs",
-    commit = "f8d8b3f739bd91a7c0462cb55235ef63c79c9abc",
+    commit = "e4d4a2206da023361ed100d85c5f2cf9c8364e9f",
     importpath = "github.com/prometheus/procfs",
 )
 
@@ -814,13 +827,13 @@ go_repository(
 
 go_repository(
     name = "com_github_libp2p_go_libp2p_discovery",
-    commit = "d4858e0322b6f8cd62ed33d6b5c846c3ebc0bb69",
+    commit = "5e0d40c7c8803e06c9eebe6dd3a0525a1d774a82",
     importpath = "github.com/libp2p/go-libp2p-discovery",
 )
 
 go_repository(
     name = "com_github_libp2p_go_libp2p_autonat",
-    commit = "494f7fce997b6f5be4750dcc24350e06d3b4d67a",
+    commit = "842b9c4919f5be0df3baee15b0f97e493f6d3fb2",
     importpath = "github.com/libp2p/go-libp2p-autonat",
 )
 
@@ -908,7 +921,7 @@ go_repository(
 
 go_repository(
     name = "org_golang_x_oauth2",
-    commit = "3e8b2be1363542a95c52ea0796d4a40dacfb5b95",
+    commit = "9b3c75971fc92dd27c6436a37c05c831498658f1",
     importpath = "golang.org/x/oauth2",
 )
 
@@ -956,7 +969,7 @@ go_repository(
 
 go_repository(
     name = "com_github_golang_snappy",
-    commit = "2e65f85255dbc3072edf28d6b5b8efc472979f5a",
+    tag = "v0.0.1",
     importpath = "github.com/golang/snappy",
 )
 
@@ -991,37 +1004,25 @@ go_repository(
 )
 
 go_repository(
-    name = "com_github_prysmaticlabs_go_bls",
-    commit = "0e61c30f21878172d57549ea1733c9808157ef08",
-    importpath = "github.com/prysmaticlabs/go-bls",
+    name = "org_gonum_v1_gonum",
+    commit = "70a1e933af10e87000d2ccabdd509b87d8626153",
+    importpath = "gonum.org/v1/gonum",
 )
 
-load("@bazel_tools//tools/build_defs/repo:git.bzl", "git_repository")
-
-git_repository(
-    name = "herumi_mcl",
-    commit = "79b3a33e21072712f00985ed2adf34b3bcf0d74e",
-    remote = "https://github.com/prysmaticlabs/mcl",
+go_repository(
+    name = "org_golang_x_exp",
+    commit = "438050ddec5e7f808979ed57d041cebbc8e2d8a9",
+    importpath = "golang.org/x/exp",
 )
 
-git_repository(
-    name = "bazelify_gmp",
-    commit = "bb4881b35e6864c90493980d035e1d984cafd093",
-    remote = "https://github.com/robin-thomas/bazelify-gmp",
+go_repository(
+    name = "com_github_prestonvanloon_go_recaptcha",
+    commit = "0834cef6e8bd3a7ebdb3ac7def9440ee47d501a4",
+    importpath = "github.com/prestonvanloon/go-recaptcha",
 )
 
-git_repository(
-    name = "boringssl",
-    commit = "fafc4482e85c09e7af5f71b2eb287b73ccd1020a",
-    remote = "https://github.com/google/boringssl",
+go_repository(
+    name = "com_github_phoreproject_bls",
+    commit = "afaefda3ea643e9292b6f4596403ed5c742561b4",
+    importpath = "github.com/phoreproject/bls",
 )
-
-git_repository(
-    name = "io_bazel_rules_m4",
-    commit = "2bf69df77dfb6b3ba6b7fc95c304b0dc279375bc",
-    remote = "https://github.com/jmillikin/rules_m4",
-)
-
-load("@io_bazel_rules_m4//:m4.bzl", "m4_register_toolchains")
-
-m4_register_toolchains()

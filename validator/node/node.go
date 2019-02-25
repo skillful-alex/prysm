@@ -10,6 +10,8 @@ import (
 	"sync"
 	"syscall"
 
+	"github.com/prysmaticlabs/prysm/shared/params"
+
 	"github.com/prysmaticlabs/prysm/validator/types"
 
 	"github.com/prysmaticlabs/prysm/shared"
@@ -41,6 +43,12 @@ func NewValidatorClient(ctx *cli.Context) (*ValidatorClient, error) {
 		ctx:      ctx,
 		services: registry,
 		stop:     make(chan struct{}),
+	}
+
+	// Use demo config values if demo config flag is set.
+	if ctx.GlobalBool(types.DemoConfigFlag.Name) {
+		log.Info("Using custom parameter configuration")
+		params.UseDemoBeaconConfig()
 	}
 
 	if err := ValidatorClient.registerPrometheusService(ctx); err != nil {
@@ -110,8 +118,15 @@ func (s *ValidatorClient) registerPrometheusService(ctx *cli.Context) error {
 
 func (s *ValidatorClient) registerClientService(ctx *cli.Context) error {
 	endpoint := ctx.GlobalString(types.BeaconRPCProviderFlag.Name)
-	v := client.NewValidatorService(context.TODO(), &client.Config{
-		Endpoint: endpoint,
+	keystoreDirectory := ctx.GlobalString(types.KeystorePathFlag.Name)
+	keystorePassword := ctx.String(types.PasswordFlag.Name)
+	v, err := client.NewValidatorService(context.TODO(), &client.Config{
+		Endpoint:     endpoint,
+		KeystorePath: keystoreDirectory,
+		Password:     keystorePassword,
 	})
+	if err != nil {
+		return fmt.Errorf("could not initialize client service: %v", err)
+	}
 	return s.services.RegisterService(v)
 }

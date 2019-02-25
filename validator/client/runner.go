@@ -5,13 +5,14 @@ import (
 
 	"github.com/opentracing/opentracing-go"
 	pb "github.com/prysmaticlabs/prysm/proto/beacon/rpc/v1"
+	"github.com/prysmaticlabs/prysm/shared/params"
 	"github.com/sirupsen/logrus"
 )
 
 // Validator interface defines the primary methods of a validator client.
 type Validator interface {
 	Done()
-	WaitForChainStart(ctx context.Context)
+	WaitForChainStart(ctx context.Context) error
 	WaitForActivation(ctx context.Context)
 	NextSlot() <-chan uint64
 	UpdateAssignments(ctx context.Context, slot uint64) error
@@ -32,8 +33,13 @@ type Validator interface {
 // 6 - Perform assigned role, if any
 func run(ctx context.Context, v Validator) {
 	defer v.Done()
-	v.WaitForChainStart(ctx)
+	if err := v.WaitForChainStart(ctx); err != nil {
+		log.Fatalf("Could not determine if beacon chain started: %v", err)
+	}
 	v.WaitForActivation(ctx)
+	if err := v.UpdateAssignments(ctx, params.BeaconConfig().GenesisSlot); err != nil {
+		log.WithField("error", err).Error("Failed to update assignments")
+	}
 	span, ctx := opentracing.StartSpanFromContext(ctx, "processSlot")
 	defer span.Finish()
 	for {
@@ -49,6 +55,9 @@ func run(ctx context.Context, v Validator) {
 			role := v.RoleAt(slot)
 
 			switch role {
+			case pb.ValidatorRole_BOTH:
+				v.ProposeBlock(ctx, slot)
+				v.AttestToBlockHead(ctx, slot)
 			case pb.ValidatorRole_ATTESTER:
 				v.AttestToBlockHead(ctx, slot)
 			case pb.ValidatorRole_PROPOSER:
@@ -56,7 +65,7 @@ func run(ctx context.Context, v Validator) {
 			case pb.ValidatorRole_UNKNOWN:
 				// This shouldn't happen normally, so it is considered a warning.
 				log.WithFields(logrus.Fields{
-					"slot": slot,
+					"slot": slot - params.BeaconConfig().GenesisSlot,
 					"role": role,
 				}).Warn("Unknown role, doing nothing")
 			default:

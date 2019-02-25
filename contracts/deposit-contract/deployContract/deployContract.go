@@ -11,6 +11,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -35,7 +36,8 @@ func main() {
 	var depositsForChainStart int64
 	var minDepositAmount int64
 	var maxDepositAmount int64
-	var skipChainstartDelay bool
+	var customChainstartDelay uint64
+	var drainAddress string
 
 	customFormatter := new(prefixed.TextFormatter)
 	customFormatter.TimestampFormat = "2006-01-02 15:04:05"
@@ -44,7 +46,7 @@ func main() {
 	log := logrus.WithField("prefix", "main")
 
 	app := cli.NewApp()
-	app.Name = "deployVRC"
+	app.Name = "deployDepositContract"
 	app.Usage = "this is a util to deploy deposit contract"
 	app.Version = version.GetVersion()
 	app.Flags = []cli.Flag{
@@ -53,10 +55,11 @@ func main() {
 			Usage:       "Location of keystore",
 			Destination: &keystoreUTCPath,
 		},
-		cli.BoolFlag{
-			Name:        "skipChainstartDelay",
-			Usage:       "Whether to skip ChainStart log being fired a day later",
-			Destination: &skipChainstartDelay,
+		cli.Uint64Flag{
+			Name:        "customChainstartDelay",
+			Usage:       "Number of seconds to delay the ChainStart genesis timestamp",
+			Value:       0,
+			Destination: &customChainstartDelay,
 		},
 		cli.StringFlag{
 			Name:        "ipcPath",
@@ -103,6 +106,12 @@ func main() {
 			Usage:       "Maximum deposit value allowed in contract",
 			Destination: &maxDepositAmount,
 		},
+		cli.StringFlag{
+			Name:        "drainAddress",
+			Value:       "",
+			Usage:       "The drain address to specify in the contract. The default will be msg.sender",
+			Destination: &drainAddress,
+		},
 	}
 
 	app.Action = func(c *cli.Context) {
@@ -131,7 +140,7 @@ func main() {
 			}
 			txOps = bind.NewKeyedTransactor(privKey)
 			txOps.Value = big.NewInt(0)
-
+			txOps.GasLimit = 4000000
 			// User inputs keystore json file, sign tx with keystore json
 		} else {
 			// #nosec - Inclusion of file via variable is OK for this tool.
@@ -157,13 +166,23 @@ func main() {
 
 			txOps = bind.NewKeyedTransactor(privKey.PrivateKey)
 			txOps.Value = big.NewInt(0)
+			txOps.GasLimit = 4000000
+		}
+
+		drain := txOps.From
+		if drainAddress != "" {
+			drain = common.HexToAddress(drainAddress)
 		}
 
 		// Deploy validator registration contract
 		addr, tx, _, err := contracts.DeployDepositContract(
-			txOps, client, big.NewInt(depositsForChainStart),
-			big.NewInt(minDepositAmount), big.NewInt(maxDepositAmount),
-			skipChainstartDelay,
+			txOps,
+			client,
+			big.NewInt(depositsForChainStart),
+			big.NewInt(minDepositAmount),
+			big.NewInt(maxDepositAmount),
+			big.NewInt(int64(customChainstartDelay)),
+			drain,
 		)
 
 		if err != nil {
@@ -198,8 +217,8 @@ func main() {
 }
 
 // updateKubernetesConfigMap in the beacon-chain namespace. This specifically
-// updates the data value for VALIDATOR_REGISTRATION_CONTRACT_ADDRESS.
-func updateKubernetesConfigMap(configMapName string, vrcAddr string) error {
+// updates the data value for DEPOSIT_CONTRACT_ADDRESS.
+func updateKubernetesConfigMap(configMapName string, contractAddr string) error {
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return err
@@ -215,10 +234,10 @@ func updateKubernetesConfigMap(configMapName string, vrcAddr string) error {
 		return err
 	}
 
-	if cm.Data["VALIDATOR_REGISTRATION_CONTRACT_ADDRESS"] != "0x0" {
-		return fmt.Errorf("existing vcr address in config map = %v", cm.Data["VALIDATOR_REGISTRATION_CONTRACT_ADDRESS"])
+	if cm.Data["DEPOSIT_CONTRACT_ADDRESS"] != "0x0" {
+		return fmt.Errorf("existing vcr address in config map = %v", cm.Data["DEPOSIT_CONTRACT_ADDRESS"])
 	}
-	cm.Data["VALIDATOR_REGISTRATION_CONTRACT_ADDRESS"] = vrcAddr
+	cm.Data["DEPOSIT_CONTRACT_ADDRESS"] = contractAddr
 
 	_, err = client.CoreV1().ConfigMaps("beacon-chain").Update(cm)
 

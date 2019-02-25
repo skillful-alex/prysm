@@ -2,15 +2,16 @@ package client
 
 import (
 	"context"
-
 	"fmt"
-
-	"github.com/prysmaticlabs/prysm/shared/params"
+	"time"
 
 	"github.com/opentracing/opentracing-go"
 	pbp2p "github.com/prysmaticlabs/prysm/proto/beacon/p2p/v1"
 	pb "github.com/prysmaticlabs/prysm/proto/beacon/rpc/v1"
+	"github.com/prysmaticlabs/prysm/shared/params"
 )
+
+var delay = params.BeaconConfig().SecondsPerSlot / 2
 
 // AttestToBlockHead completes the validator client's attester responsibility at a given slot.
 // It fetches the latest beacon block head along with the latest canonical beacon state
@@ -19,6 +20,7 @@ import (
 func (v *validator) AttestToBlockHead(ctx context.Context, slot uint64) {
 	span, ctx := opentracing.StartSpanFromContext(ctx, "validator.AttestToBlockHead")
 	defer span.Finish()
+	log.Info("Attesting...")
 	// First the validator should construct attestation_data, an AttestationData
 	// object based upon the state at the assigned slot.
 	attData := &pbp2p.AttestationData{
@@ -28,7 +30,7 @@ func (v *validator) AttestToBlockHead(ctx context.Context, slot uint64) {
 	// We fetch the validator index as it is necessary to generate the aggregation
 	// bitfield of the attestation itself.
 	idxReq := &pb.ValidatorIndexRequest{
-		PublicKey: v.pubKey,
+		PublicKey: v.key.PublicKey.Marshal(),
 	}
 	validatorIndexRes, err := v.validatorClient.ValidatorIndex(ctx, idxReq)
 	if err != nil {
@@ -41,7 +43,8 @@ func (v *validator) AttestToBlockHead(ctx context.Context, slot uint64) {
 	}
 	resp, err := v.validatorClient.ValidatorCommitteeAtSlot(ctx, req)
 	if err != nil {
-		log.Errorf("Could not fetch crosslink committees at slot %d: %v", slot, err)
+		log.Errorf("Could not fetch crosslink committees at slot %d: %v",
+			slot-params.BeaconConfig().GenesisSlot, err)
 		return
 	}
 	// Set the attestation data's shard as the shard associated with the validator's
@@ -51,14 +54,15 @@ func (v *validator) AttestToBlockHead(ctx context.Context, slot uint64) {
 	// Fetch other necessary information from the beacon node in order to attest
 	// including the justified epoch, epoch boundary information, and more.
 	infoReq := &pb.AttestationInfoRequest{
-		Slot:  slot,
 		Shard: resp.Shard,
 	}
 	infoRes, err := v.attesterClient.AttestationInfoAtSlot(ctx, infoReq)
 	if err != nil {
-		log.Errorf("Could not fetch necessary info to produce attestation at slot %d: %v", slot, err)
+		log.Errorf("Could not fetch necessary info to produce attestation at slot %d: %v",
+			slot-params.BeaconConfig().GenesisSlot, err)
 		return
 	}
+	log.Infof("Attestation info response: %v", infoRes)
 	// Set the attestation data's beacon block root = hash_tree_root(head) where head
 	// is the validator's view of the head block of the beacon chain during the slot.
 	attData.BeaconBlockRootHash32 = infoRes.BeaconBlockRootHash32
@@ -106,6 +110,10 @@ func (v *validator) AttestToBlockHead(ctx context.Context, slot uint64) {
 	// TODO(#1366): Use BLS to generate an aggregate signature.
 	attestation.AggregateSignature = []byte("signed")
 
+	duration := time.Duration(slot*params.BeaconConfig().SecondsPerSlot+delay) * time.Second
+	timeToBroadcast := time.Unix(int64(v.genesisTime), 0).Add(duration)
+	time.Sleep(time.Until(timeToBroadcast))
+	log.Infof("Produced attestation: %v", attestation)
 	attestRes, err := v.attesterClient.AttestHead(ctx, attestation)
 	if err != nil {
 		log.Errorf("Could not submit attestation to beacon node: %v", err)
@@ -113,5 +121,5 @@ func (v *validator) AttestToBlockHead(ctx context.Context, slot uint64) {
 	}
 	log.WithField(
 		"hash", fmt.Sprintf("%#x", attestRes.AttestationHash),
-	).Info("Submitted attestation successfully with hash %#x", attestRes.AttestationHash)
+	).Infof("Submitted attestation successfully with hash %#x", attestRes.AttestationHash)
 }
